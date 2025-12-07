@@ -7,26 +7,16 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  const allowedOrigins = [
-    'http://localhost:3001', // local frontend
-    'https://animegalaxy.vercel.app' // production frontend
-  ];
-
   app.enableCors({
-    origin: (origin, callback) => {
-      // allow requests with no origin (like Postman)
-      if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
+    origin: [
+      "http://localhost:3000",         // local frontend
+      "http://localhost:3001",         // optional, if you run frontend on 3001
+      "https://animegalaxy.vercel.app" // production frontend
+    ],
     credentials: true,
   });
 
-  const port = process.env.PORT || 3000;
+  const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
   await app.listen(port);
   console.log(`Server running on port ${port}`);
 }
