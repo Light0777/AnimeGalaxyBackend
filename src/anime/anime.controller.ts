@@ -8,7 +8,16 @@ export class AnimeController {
   // GET /anime/search?q=naruto
   @Get('search')
   async searchAnime(@Query('q') q: string) {
+    if (!q || q.trim() === '') {
+      return [];
+    }
     return await this.animeService.searchAnime(q);
+  }
+
+  // GET /anime/trending - Get currently trending anime
+  @Get('trending')
+  async getTrendingAnime() {
+    return await this.animeService.getTrendingAnime();
   }
 
   // GET /anime/:id
