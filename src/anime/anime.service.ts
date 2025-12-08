@@ -1,12 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { supabase } from '../supabase.client';
 import axios from 'axios';
-import {
-  JikanAnime,
-  JikanResponse,
-  JikanSearchResponse,
-  JikanSingleResponse,
-} from '../types/jikan.types';
 
 @Injectable()
 export class AnimeService {
@@ -24,11 +18,9 @@ export class AnimeService {
 
       if (cached) return cached;
 
-      // Fetch from Jikan API with proper typing
-      const response = await axios.get<JikanSingleResponse>(
-        `${this.jikanBaseUrl}/anime/${id}`
-      );
-      const anime: JikanAnime = response.data.data;
+      // Fetch from Jikan API
+      const response = await axios.get(`${this.jikanBaseUrl}/anime/${id}`);
+      const anime = (response.data as any).data; // Type assertion
 
       // Prepare data for caching
       const animeData = {
@@ -46,11 +38,16 @@ export class AnimeService {
         rating: anime.rating,
         rank: anime.rank,
         popularity: anime.popularity,
-        genres: anime.genres.map((g) => g.name),
-        themes: anime.themes?.map((t) => t.name) || [],
-        demographics: anime.demographics?.map((d) => d.name) || [],
-        studios: anime.studios?.map((s) => s.name) || [],
+        genres: anime.genres.map((g: any) => g.name),
+        themes: anime.themes?.map((t: any) => t.name) || [],
+        demographics: anime.demographics?.map((d: any) => d.name) || [],
+        studios: anime.studios?.map((s: any) => s.name) || [],
         trailer_url: anime.trailer?.url || null,
+        duration: anime.duration,
+        broadcast_day: anime.broadcast?.day || null,
+        broadcast_time: anime.broadcast?.time || null,
+        broadcast_timezone: anime.broadcast?.timezone || null,
+        source: anime.source,
       };
 
       // Cache in Supabase
@@ -70,14 +67,14 @@ export class AnimeService {
         return [];
       }
 
-      const response = await axios.get<JikanSearchResponse>(
+      const response = await axios.get(
         `${this.jikanBaseUrl}/anime?q=${encodeURIComponent(query)}&limit=20&order_by=popularity`
       );
 
-      const animeList = response.data.data;
+      const data = response.data as any; // Type assertion
 
       // Transform the data to match frontend expectations
-      return animeList.map((anime: JikanAnime) => ({
+      return data.data.map((anime: any) => ({
         mal_id: anime.mal_id,
         title: anime.title,
         title_english: anime.title_english || anime.title,
@@ -116,14 +113,15 @@ export class AnimeService {
   // Get trending anime (top by popularity/score)
   async getTrendingAnime() {
     try {
-      const response = await axios.get<JikanSearchResponse>(
+      const response = await axios.get(
         `${this.jikanBaseUrl}/top/anime?limit=20&filter=bypopularity`
       );
 
-      const animeList = response.data.data;
+      const data = response.data as any; // Type assertion
+      const animeList = data.data;
 
       // Transform the data to match frontend expectations
-      return animeList.map((anime: JikanAnime, index: number) => ({
+      return animeList.map((anime: any, index: number) => ({
         mal_id: anime.mal_id,
         title: anime.title,
         title_english: anime.title_english || anime.title,
@@ -155,79 +153,235 @@ export class AnimeService {
       }));
     } catch (error) {
       console.error('Error fetching trending anime:', error);
-      
+
       // Fallback: return some popular anime if API fails
-      return this.getFallbackTrendingAnime();
+      return this.getFallbackAiringAnime();
     }
   }
 
-  // Fallback trending data in case API fails
-  private async getFallbackTrendingAnime(): Promise<any[]> {
-    const fallbackAnime = [
+  async getTopAiringAnime() {
+    try {
+      // Get currently airing anime
+      const response = await axios.get(
+        `https://api.jikan.moe/v4/seasons/now?limit=15`
+      );
+
+      const data = response.data as any;
+      const animeList = data.data;
+
+      // Transform the data
+      return animeList.slice(0, 5).map((anime: any, index: number) => {
+        // Extract YouTube ID from trailer if available
+        let trailerUrl: string | null = null;
+
+        if (anime.trailer?.youtube_id) {
+          trailerUrl = `https://www.youtube.com/watch?v=${anime.trailer.youtube_id}`;
+        } else if (anime.trailer?.url) {
+          trailerUrl = anime.trailer.url;
+        }
+
+        // If no trailer from Jikan, try to get one from our fallback list
+        if (!trailerUrl) {
+          trailerUrl = this.getTrailerByTitle(anime.title) || null;
+        }
+
+        return {
+          mal_id: anime.mal_id,
+          title: anime.title,
+          title_english: anime.title_english || anime.title,
+          title_japanese: anime.title_japanese || anime.title,
+          images: {
+            jpg: {
+              image_url: anime.images.jpg.image_url,
+              large_image_url: anime.images.jpg.large_image_url || anime.images.jpg.image_url,
+              small_image_url: anime.images.jpg.small_image_url || anime.images.jpg.image_url,
+            }
+          },
+          score: anime.score,
+          episodes: anime.episodes,
+          year: anime.year || new Date().getFullYear(),
+          status: anime.status,
+          rating: anime.rating,
+          rank: index + 1,
+          popularity: anime.popularity,
+          synopsis: anime.synopsis,
+          genres: anime.genres,
+          themes: anime.themes || [],
+          demographics: anime.demographics || [],
+          studios: anime.studios || [],
+          trailer_url: trailerUrl,
+          aired: anime.aired,
+          duration: anime.duration,
+          broadcast: anime.broadcast,
+          source: anime.source,
+        };
+      });
+    } catch (error) {
+      console.error('Error fetching top airing anime:', error);
+
+      // Return fallback anime with trailers
+      return this.getFallbackAiringAnime();
+    }
+  }
+
+  // Helper method to get trailers for popular anime
+  private getTrailerByTitle(title: string): string | null {
+    const trailerMap: Record<string, string> = {
+      // My Hero Academia
+      "Boku no Hero Academia": "https://www.youtube.com/watch?v=Af3J8t3X5jM",
+      "My Hero Academia": "https://www.youtube.com/watch?v=Af3J8t3X5jM",
+      "Boku no Hero Academia: Final Season": "https://www.youtube.com/watch?v=Af3J8t3X5jM",
+
+      // Spy x Family
+      "Spy x Family": "https://www.youtube.com/watch?v=41i8b2bQvMk",
+      "Spy x Family Season 3": "https://www.youtube.com/watch?v=41i8b2bQvMk",
+
+      // Jujutsu Kaisen
+      "Jujutsu Kaisen": "https://www.youtube.com/watch?v=2L5WraRgFw4",
+      "Jujutsu Kaisen 2nd Season": "https://www.youtube.com/watch?v=2L5WraRgFw4",
+
+      // One Piece
+      "One Piece": "https://www.youtube.com/watch?v=Ades3pQbeh8",
+
+      // Demon Slayer
+      "Demon Slayer": "https://www.youtube.com/watch?v=VQGCKyvzIM4",
+      "Kimetsu no Yaiba": "https://www.youtube.com/watch?v=VQGCKyvzIM4",
+
+      // Attack on Titan
+      "Attack on Titan": "https://www.youtube.com/watch?v=MGRm4IzK1SQ",
+      "Shingeki no Kyojin": "https://www.youtube.com/watch?v=MGRm4IzK1SQ",
+    };
+
+    return trailerMap[title] || null;
+  }
+
+  private async getFallbackAiringAnime(): Promise<any[]> {
+    // Hardcoded list of currently airing anime with working trailers
+    return [
       {
-        mal_id: 5114,
-        title: "Fullmetal Alchemist: Brotherhood",
-        score: 9.1,
+        mal_id: 51009,
+        title: "Jujutsu Kaisen 2nd Season",
+        title_english: "Jujutsu Kaisen Season 2",
+        title_japanese: "呪術廻戦 懐玉・玉折",
+        score: 8.95,
         rank: 1,
         images: {
           jpg: {
-            image_url: "https://cdn.myanimelist.net/images/anime/1208/94745.jpg",
-            large_image_url: "https://cdn.myanimelist.net/images/anime/1208/94745.jpg",
-            small_image_url: "https://cdn.myanimelist.net/images/anime/1208/94745.jpg"
+            image_url: "https://cdn.myanimelist.net/images/anime/1792/138022.jpg",
+            large_image_url: "https://cdn.myanimelist.net/images/anime/1792/138022.jpg",
+            small_image_url: "https://cdn.myanimelist.net/images/anime/1792/138022.jpg"
           }
         },
-        episodes: 64,
-        year: 2009,
+        episodes: 23,
+        year: 2023,
         status: "Finished Airing",
-        rating: "R - 17+ (violence & profanity)",
-        popularity: 3,
-        synopsis: "After a horrific alchemy experiment goes wrong in the Elric household...",
+        rating: "R - 17+",
+        popularity: 2,
+        synopsis: "Yuji Itadori is a boy with tremendous physical strength...",
         genres: [
-          { mal_id: 1, type: "anime", name: "Action", url: "https://myanimelist.net/anime/genre/1/Action" },
-          { mal_id: 2, type: "anime", name: "Adventure", url: "https://myanimelist.net/anime/genre/2/Adventure" }
+          { mal_id: 1, name: "Action" },
+          { mal_id: 2, name: "Supernatural" }
         ],
-        themes: [],
-        demographics: [],
-        studios: [],
-        trailer_url: null,
-        aired: { from: "2009-04-05T00:00:00+00:00", to: "2010-07-04T00:00:00+00:00" },
-        duration: "24 min per ep",
-        broadcast: { day: "Sunday", time: "17:00", timezone: "Asia/Tokyo" },
+        trailer_url: "https://www.youtube.com/watch?v=2L5WraRgFw4",
         source: "Manga"
       },
       {
-        mal_id: 9253,
-        title: "Steins;Gate",
-        score: 9.07,
+        mal_id: 52991,
+        title: "Sousou no Frieren",
+        title_english: "Frieren: Beyond Journey's End",
+        title_japanese: "葬送のフリーレン",
+        score: 9.1,
         rank: 2,
         images: {
           jpg: {
-            image_url: "https://cdn.myanimelist.net/images/anime/1935/127974.jpg",
-            large_image_url: "https://cdn.myanimelist.net/images/anime/1935/127974.jpg",
-            small_image_url: "https://cdn.myanimelist.net/images/anime/1935/127974.jpg"
+            image_url: "https://cdn.myanimelist.net/images/anime/1015/138006.jpg",
+            large_image_url: "https://cdn.myanimelist.net/images/anime/1015/138006.jpg",
+            small_image_url: "https://cdn.myanimelist.net/images/anime/1015/138006.jpg"
           }
         },
-        episodes: 24,
-        year: 2011,
-        status: "Finished Airing",
+        episodes: 28,
+        year: 2023,
+        status: "Currently Airing",
         rating: "PG-13 - Teens 13 or older",
-        popularity: 10,
-        synopsis: "The self-proclaimed mad scientist Rintarou Okabe rents out a room in a rickety old building in Akihabara...",
+        popularity: 1,
         genres: [
-          { mal_id: 24, type: "anime", name: "Sci-Fi", url: "https://myanimelist.net/anime/genre/24/Sci-Fi" },
-          { mal_id: 4, type: "anime", name: "Comedy", url: "https://myanimelist.net/anime/genre/4/Comedy" }
+          { mal_id: 2, name: "Adventure" },
+          { mal_id: 6, name: "Fantasy" }
         ],
-        themes: [],
-        demographics: [],
-        studios: [],
-        trailer_url: null,
-        aired: { from: "2011-04-06T00:00:00+00:00", to: "2011-09-14T00:00:00+00:00" },
-        duration: "24 min per ep",
-        broadcast: { day: "Wednesday", time: "02:05", timezone: "Asia/Tokyo" },
-        source: "Visual novel"
+        trailer_url: "https://www.youtube.com/watch?v=SpmJx5jvfoo",
+        source: "Manga"
+      },
+      {
+        mal_id: 51298,
+        title: "Oshi no Ko",
+        score: 8.73,
+        rank: 3,
+        images: {
+          jpg: {
+            image_url: "https://cdn.myanimelist.net/images/anime/1816/134736.jpg",
+            large_image_url: "https://cdn.myanimelist.net/images/anime/1816/134736.jpg",
+            small_image_url: "https://cdn.myanimelist.net/images/anime/1816/134736.jpg"
+          }
+        },
+        episodes: 11,
+        year: 2023,
+        status: "Finished Airing",
+        rating: "R - 17+",
+        genres: [
+          { mal_id: 36, name: "Slice of Life" },
+          { mal_id: 7, name: "Mystery" }
+        ],
+        trailer_url: "https://www.youtube.com/watch?v=zutgV1Dk-uk",
+        source: "Manga"
+      },
+      {
+        mal_id: 52614,
+        title: "Mushoku Tensei II: Isekai Ittara Honki Dasu",
+        title_english: "Mushoku Tensei: Jobless Reincarnation Season 2",
+        score: 8.49,
+        rank: 4,
+        images: {
+          jpg: {
+            image_url: "https://cdn.myanimelist.net/images/anime/1948/136244.jpg",
+            large_image_url: "https://cdn.myanimelist.net/images/anime/1948/136244.jpg",
+            small_image_url: "https://cdn.myanimelist.net/images/anime/1948/136244.jpg"
+          }
+        },
+        episodes: 12,
+        year: 2023,
+        status: "Finished Airing",
+        rating: "R+ - Mild Nudity",
+        genres: [
+          { mal_id: 2, name: "Adventure" },
+          { mal_id: 6, name: "Fantasy" }
+        ],
+        trailer_url: "https://www.youtube.com/watch?v=Km80e5RZGkM",
+        source: "Light Novel"
+      },
+      {
+        mal_id: 54918,
+        title: "Jujutsu Kaisen: Kaigyoku Gyokusetsu",
+        title_english: "Jujutsu Kaisen: Culling Game",
+        score: 8.7,
+        rank: 5,
+        images: {
+          jpg: {
+            image_url: "https://cdn.myanimelist.net/images/anime/1985/141053.jpg",
+            large_image_url: "https://cdn.myanimelist.net/images/anime/1985/141053.jpg",
+            small_image_url: "https://cdn.myanimelist.net/images/anime/1985/141053.jpg"
+          }
+        },
+        episodes: 18,
+        year: 2024,
+        status: "Currently Airing",
+        rating: "R - 17+",
+        genres: [
+          { mal_id: 1, name: "Action" },
+          { mal_id: 2, name: "Supernatural" }
+        ],
+        trailer_url: "https://www.youtube.com/watch?v=lY5pYo7mE0c",
+        source: "Manga"
       }
     ];
-    
-    return fallbackAnime;
   }
 }
